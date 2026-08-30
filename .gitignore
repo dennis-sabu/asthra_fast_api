@@ -1,0 +1,25 @@
+# Python virtual environment
+.venv/
+
+# PaddleOCR model files
+models/
+
+# Uploaded images
+uploads/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+.env.*
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
