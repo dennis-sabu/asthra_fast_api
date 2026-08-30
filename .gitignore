@@ -1,10 +1,13 @@
 # Python virtual environment
 .venv/
 
-# PaddleOCR model files
+# PaddleOCR model files (large, do not commit)
 models/
 
-# Uploaded images
+# PaddleX cached models (downloaded to user home, not in project)
+# These live in %USERPROFILE%\.paddlex\ and are not tracked here.
+
+# Uploaded images (transient)
 uploads/
 
 # Python cache
