@@ -24,11 +24,10 @@ from .scanner import IDScanner, MAX_UPLOAD_BYTES
 # CORS — centralised configuration
 # ---------------------------------------------------------------------------
 
-CORS_ORIGINS = [
+ALLOWED_ORIGINS = [
+    "https://asthra-welcome-robot.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
 ]
 
 # ---------------------------------------------------------------------------
@@ -48,8 +47,8 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
