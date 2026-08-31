@@ -32,9 +32,7 @@ FastAPI backend service for the **Asthra College Welcome Robot**. This service a
 
 Open PowerShell, Command Prompt, or VS Code integrated terminal in the project root folder:
 
-```powershell
-cd "c:\Users\denni\OneDrive\Documents\vs code\websites\asthra_fast_api"
-```
+
 
 ---
 

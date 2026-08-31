@@ -75,20 +75,17 @@ VL_MAX_NEW_TOKENS = 64
 
 # VL inference: limit image pixels fed to the VLM (28*28 = one ViT patch)
 # Benchmark results (CPU, RTX 3050 not available via this paddle build):
-#   256 * 28 * 28 ≈ 200K px → ~20s  (Dennis Sabu: ✓)
+#   256 * 28 * 28 ≈ 200K px → ~20s  (Dennis Sabu: ✓)  ← chosen
 #   128 * 28 * 28 ≈ 100K px → ~18s  (Dennis Sabu: ✓)  (previous default)
 #    64 * 28 * 28 ≈  50K px → ~18s  (Dennis Sabu: ✓)  (diminishing returns)
-# The above was only ever benchmarked against ONE card, and 100K->200K cost
-# just +2s for the same result, so headroom above 256 was never explored.
-# At 128 (~400x250 effective px for a 1.585:1 card) small/lighter-weight
-# printed names can fall below legible resolution, which likely explains
-# reliability varying across different cards rather than a flat pass/fail.
-# 512 (~798x503 effective px) roughly doubles linear resolution for what
-# the 100K->200K step suggests should be a modest time cost. This is a
-# reversible experiment: re-run the repeated-scan test protocol at this
-# setting and compare success rate + processing_time_ms against the
-# previous VL_MAX_PIXELS = 128 * 28 * 28 baseline before keeping it.
-VL_MAX_PIXELS = 512 * 28 * 28
+# 512 * 28 * 28 was tried as an experiment on 2026-08-31 and reverted: real
+# on-device tests measured 56.6s and 115.6s processing times (vs the ~20s
+# predicted by linearly extrapolating from the 100K->200K data point).
+# ViT self-attention cost scales worse than linearly with patch count, so a
+# 4x pixel-count jump does not cost a proportional amount of time. It also
+# did not reliably fix accuracy (one scan still found zero text at all).
+# 256 keeps the resolution gain from 128 without the runaway time cost.
+VL_MAX_PIXELS = 256 * 28 * 28
 VL_MIN_PIXELS = 4 * 28 * 28
 
 # ---------------------------------------------------------------------------
