@@ -23,6 +23,9 @@ import time
 
 import requests
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 BASE_URL = "http://127.0.0.1:8000"
 ID_IMAGE_PATH = "id.jpeg"
 
@@ -54,7 +57,7 @@ def section(title: str):
 # ----------------------------------------------------------
 section("1. GET /")
 try:
-    r = requests.get(f"{BASE_URL}/", timeout=5)
+    r = requests.get(f"{BASE_URL}/", timeout=30)
     body = r.json()
     check("Status 200", r.status_code == 200, f"got {r.status_code}")
     check("service = 'Asthra ID Scanner'", body.get("service") == "Asthra ID Scanner", str(body))
@@ -68,7 +71,7 @@ except Exception as e:
 # ──────────────────────────────────────────────────────────
 section("2. GET /health")
 try:
-    r = requests.get(f"{BASE_URL}/health", timeout=5)
+    r = requests.get(f"{BASE_URL}/health", timeout=30)
     body = r.json()
     check("Status 200", r.status_code == 200, f"got {r.status_code}")
     check("status = 'healthy'", body.get("status") == "healthy", str(body))
@@ -76,7 +79,7 @@ try:
     check("device field present", "device" in body, str(body))
     device = body.get("device", "unknown")
     check(f"device = '{device}'", device in ("cpu", "gpu"), str(body))
-    print(f"      → device reported: {device}")
+    print(f"      -> device reported: {device}")
 except Exception as e:
     check("GET /health reachable", False, str(e))
 
@@ -101,10 +104,10 @@ try:
     check("message contains name", "Dennis Sabu" in body.get("message", ""), str(body))
     check("confidence > 0", body.get("confidence", 0) > 0, str(body))
     check("processing_time_ms present", "processing_time_ms" in body, str(body))
-    print(f"      → name:        {body.get('name')!r}")
-    print(f"      → confidence:  {body.get('confidence')}")
-    print(f"      → time (API):  {elapsed_ms}ms")
-    print(f"      → time (svc):  {body.get('processing_time_ms')}ms")
+    print(f"      -> name:        {body.get('name')!r}")
+    print(f"      -> confidence:  {body.get('confidence')}")
+    print(f"      -> time (API):  {elapsed_ms}ms")
+    print(f"      -> time (svc):  {body.get('processing_time_ms')}ms")
 except Exception as e:
     check("scan-id first scan", False, str(e))
 
@@ -127,7 +130,7 @@ try:
     check("success = true", body.get("success") is True, str(body))
     check("name = 'Dennis Sabu'", body.get("name") == "Dennis Sabu", f"got {body.get('name')!r}")
     check("fast response (< 5s)", elapsed_ms < 5000, f"took {elapsed_ms}ms")
-    print(f"      → time (API):  {elapsed_ms}ms  ← should be near-instant")
+    print(f"      -> time (API):  {elapsed_ms}ms  <- should be near-instant")
 except Exception as e:
     check("scan-id repeated scan", False, str(e))
 
@@ -151,7 +154,7 @@ except Exception as e:
 # ──────────────────────────────────────────────────────────
 section("6. POST /scan-id  (missing file)")
 try:
-    r = requests.post(f"{BASE_URL}/scan-id", timeout=5)
+    r = requests.post(f"{BASE_URL}/scan-id", timeout=30)
     check("Status 422", r.status_code == 422, f"got {r.status_code}")
 except Exception as e:
     check("missing file rejected", False, str(e))
@@ -181,7 +184,7 @@ try:
         corrected, was_corrected = apply_vip_correction(ocr_in)
         if should_correct:
             check(
-                f"VIP correction: {ocr_in!r} → {expected!r}",
+                f"VIP correction: {ocr_in!r} -> {expected!r}",
                 corrected == expected,
                 f"got {corrected!r}",
             )

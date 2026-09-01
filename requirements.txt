@@ -1,23 +1,28 @@
 # Asthra ID Scanner — Python dependencies
 #
 # Install with:
-#   .venv\Scripts\pip.exe install -r requirements.txt
+#   pip install -r requirements.txt
 #
-# Note: paddlepaddle (CPU build) is installed from pip.
-#       GPU build requires a separate CUDA wheel — see:
-#       https://www.paddlepaddle.org.cn/install/quick
+# Note: paddlepaddle and torch (CPU builds) are installed from PyPI.
+#       GPU acceleration requires dedicated CUDA builds.
 
 fastapi
 uvicorn[standard]
 python-multipart
 Pillow
-opencv-python
+opencv-contrib-python
 numpy
 
-# PaddleOCR ecosystem
+# EasyOCR Engine (Fast Path)
+torch
+torchvision
+easyocr
+scikit-image
+
+# PaddleOCR Ecosystem (PaddleOCR-VL Fallback)
 paddlepaddle
 paddleocr
 paddlex[ocr]
 
-# HTTP client (for test_api.py)
+# HTTP Client (for test_api.py & benchmarking)
 requests
