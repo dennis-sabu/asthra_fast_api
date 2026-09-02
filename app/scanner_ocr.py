@@ -54,7 +54,6 @@ import os
 import re
 import sys
 import time
-from difflib import SequenceMatcher
 from typing import Optional
 
 import cv2
@@ -65,6 +64,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from .preprocessing import preprocess_pipeline, rotate_image, enhance_for_ocr, resize_for_ocr
+from . import name_utils
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -85,118 +85,10 @@ ORIENTATION_QUALITY_THRESHOLD = 0.55
 # EasyOCR language list — English only to keep model small and fast
 EASYOCR_LANGUAGES = ["en"]
 
-# ---------------------------------------------------------------------------
-# VIP name list — correction/validation only, NOT a whitelist
-# ---------------------------------------------------------------------------
-
-VIP_NAMES: list[str] = [
-    "Msgr. Dr. Joseph Thadathil",
-    "Rev. Prof. Dr. James John Mangalathu",
-    "Dr. V. P. Devassia",
-    "Rev. Dr. Joseph Purayidathil",
-    "Dr. Giby Jose",
-]
-
-VIP_SIMILARITY_THRESHOLD = 0.75
-
-# ---------------------------------------------------------------------------
-# Non-name keyword reject list
-# ---------------------------------------------------------------------------
-
-_REJECT_WORDS: frozenset[str] = frozenset({
-    "ST.JOSEPH", "ST. JOSEPH", "COLLEGE", "ENGINEERING",
-    "TECHNOLOGY", "AUTONOMOUS", "B.TECH", "BTECH", "M.TECH", "MTECH",
-    "ECS", "ECE", "CSE", "COMPUTER", "ELECTRONICS", "MECHANICAL",
-    "PRINCIPAL", "SIGNATURE", "MANAGED", "DIOCESE", "DEPARTMENT",
-    "UNIVERSITY", "INSTITUTION", "ACADEMY", "SCHOOL",
-    "IDENTIFICATION", "VALID", "VALIDITY", "ISSUED", "ISSUE",
-    "EXPIRY", "EXPIRES", "ADDRESS", "PHONE", "EMAIL",
-    "WEBSITE", "WWW.", "HTTP", "EMPLOYEE", "STUDENT",
-    "REGISTER", "ROLL", "REG.", "PHOTO", "LIBRARY", "ACCESS", "CARD",
-    "PALAI", "DIOCESE", "THRISSUR", "KERALA", "INDIA",
-})
-
-_ID_PATTERN = re.compile(r"^\d+$|^[A-Z]{1,4}\d{3,}$|^\d{2,}[A-Z]{2,}\d{3,}$")
-_DATE_PATTERN = re.compile(
-    r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{4}[/-]\d{2}[/-]\d{2}\b"
-)
-_HONORIFICS: frozenset[str] = frozenset({
-    "Dr", "Dr.", "Rev", "Rev.", "Prof", "Prof.",
-    "Msgr", "Msgr.", "Mr", "Mr.", "Mrs", "Mrs.", "Ms", "Ms.",
-    "Er", "Er.", "Fr", "Fr.",
-})
-
 
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
-
-
-def _similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
-
-
-def _apply_vip_correction(candidate: str) -> tuple[str, bool]:
-    best_score, best_vip = 0.0, candidate
-    for vip in VIP_NAMES:
-        s = _similarity(candidate, vip)
-        if s > best_score:
-            best_score, best_vip = s, vip
-    if best_score >= VIP_SIMILARITY_THRESHOLD:
-        return best_vip, True
-    return candidate, False
-
-
-def _is_valid_name_candidate(text: str) -> bool:
-    """Return True if text could plausibly be a person's name."""
-    text = text.strip()
-    if not text:
-        return False
-    upper = text.upper()
-    if any(w in upper for w in _REJECT_WORDS):
-        return False
-    if _ID_PATTERN.match(text.strip()):
-        return False
-    if _DATE_PATTERN.search(text):
-        return False
-    if sum(c.isalpha() for c in text) < 4:
-        return False
-    digit_ratio = sum(c.isdigit() for c in text) / max(len(text), 1)
-    if digit_ratio > 0.15:
-        return False
-    if not all(c.isalpha() or c in " .'-," for c in text):
-        return False
-    words = text.split()
-    if len(words) < 2 or len(words) > 8:
-        return False
-    # Reject ALL-CAPS lines with 3+ non-honorific words (likely a heading)
-    non_hon = [w for w in words if w.rstrip(".").title() not in _HONORIFICS]
-    if len(non_hon) >= 3 and all(w.isupper() for w in non_hon if len(w) > 1):
-        return False
-    return True
-
-
-def _score_name_candidate(text: str) -> float:
-    """Heuristic quality score (0.0–1.0). Higher = more name-like."""
-    words = text.split()
-    score = 0.0
-    if 2 <= len(words) <= 4:
-        score += 0.30
-    elif len(words) == 5:
-        score += 0.15
-    if 6 <= len(text) <= 45:
-        score += 0.20
-    first = words[0].rstrip(".")
-    if first in {h.rstrip(".") for h in _HONORIFICS}:
-        score += 0.30
-    cap_count = sum(1 for w in words if w and w[0].isupper())
-    if cap_count >= max(1, len(words) - 1):
-        score += 0.20
-    for vip in VIP_NAMES:
-        if _similarity(text, vip) > 0.80:
-            score += 0.20
-            break
-    return min(score, 1.0)
 
 
 def _orientation_quality(ocr_lines: list[dict]) -> float:
@@ -231,7 +123,7 @@ def _orientation_quality(ocr_lines: list[dict]) -> float:
 
     # Name candidate bonus
     name_bonus = 0.1 if any(
-        _is_valid_name_candidate(ln["text"]) for ln in ocr_lines
+        name_utils.is_valid_name_candidate(ln["text"]) for ln in ocr_lines
     ) else 0.0
 
     quality = (
@@ -375,7 +267,13 @@ class LightOCRScanner:
         # ---- Name extraction ----
         t_name = time.perf_counter()
         in_sweep = best_angle != 0
-        result = self._extract_name(ocr_lines, preproc_ms, ocr_ms, in_rotation_sweep=in_sweep)
+        result = self._extract_name(
+            ocr_lines,
+            preproc_ms,
+            ocr_ms,
+            in_rotation_sweep=in_sweep,
+            img_size=(proc_w, proc_h)
+        )
         name_ms = int((time.perf_counter() - t_name) * 1000)
         total_ms = int((time.perf_counter() - t_total) * 1000)
 
@@ -418,7 +316,7 @@ class LightOCRScanner:
         """
         original_lines = self._ocr_single(bgr)
         orig_quality = _orientation_quality(original_lines)
-        has_name = any(_is_valid_name_candidate(ln["text"]) for ln in original_lines)
+        has_name = any(name_utils.is_valid_name_candidate(ln["text"]) for ln in original_lines)
 
         if orig_quality >= ORIENTATION_QUALITY_THRESHOLD and has_name:
             return original_lines, 0, orig_quality
@@ -437,7 +335,7 @@ class LightOCRScanner:
             rotated = rotate_image(bgr, angle)
             lines = self._ocr_single(rotated)
             q = _orientation_quality(lines)
-            found_name = any(_is_valid_name_candidate(ln["text"]) for ln in lines)
+            found_name = any(name_utils.is_valid_name_candidate(ln["text"]) for ln in lines)
             print(f" [Orient] {angle:>3}deg: quality={q:.2f}  lines={len(lines)}  name={found_name}")
 
             # Prefer: name found > quality > previous best
@@ -488,6 +386,7 @@ class LightOCRScanner:
         preproc_ms: int,
         ocr_ms: int,
         in_rotation_sweep: bool = False,
+        img_size: tuple[int, int] = (1, 1),
     ) -> dict:
         """Score all OCR lines and return the best name candidate.
 
@@ -496,6 +395,8 @@ class LightOCRScanner:
         in_rotation_sweep : bool
             When True (orientation was auto-corrected), apply a higher minimum
             OCR confidence (0.5) to prevent garbled text from passing as a name.
+        img_size : tuple[int, int]
+            Dimensions of the processed image (width, height) for relative scoring.
         """
 
         raw_text = [ln["text"] for ln in ocr_lines]
@@ -519,8 +420,6 @@ class LightOCRScanner:
         }
 
         # Minimum OCR confidence for a name candidate.
-        # Raised when a rotation sweep was needed to avoid low-confidence
-        # reversed/garbled text being accepted as a person's name.
         min_name_conf = 0.50 if in_rotation_sweep else 0.30
 
         candidates: list[dict] = []
@@ -528,6 +427,7 @@ class LightOCRScanner:
         for item in ocr_lines:
             raw = item["text"].strip()
             ocr_conf = float(item.get("confidence", 0.0))
+            bbox = item.get("bbox")
 
             # Skip low-confidence lines during rotation sweep
             if ocr_conf < min_name_conf:
@@ -536,12 +436,23 @@ class LightOCRScanner:
 
             # Split on newlines/pipes in case OCR joined lines
             for line in [s.strip() for s in re.split(r"[\n|]", raw) if s.strip()]:
-                if not _is_valid_name_candidate(line):
-                    print(f" [Name] REJECT: {line!r}")
+                if not name_utils.is_valid_name_candidate(line):
+                    # Classification for debug logging
+                    reason = "INVALID"
+                    if any(role in line.lower() for role in name_utils.ROLE_EXCLUSION_LIST):
+                        reason = "DESIGNATION_REJECTED"
+                    elif any(w in line.upper() for w in name_utils.REJECT_WORDS):
+                        reason = "INSTITUTION_REJECTED"
+                    elif name_utils.ID_PATTERN.match(line):
+                        reason = "ID_CODE_REJECTED"
+
+                    print(f" [Name] {reason}: {line!r}")
                     continue
-                corrected, was_vip = _apply_vip_correction(line)
-                name_sc = _score_name_candidate(corrected)
+
+                corrected, was_vip = name_utils.apply_vip_correction(line)
+                name_sc = name_utils.score_name_candidate(corrected, bbox=bbox, img_size=img_size)
                 blended = 0.5 * ocr_conf + 0.5 * name_sc
+
                 candidates.append({
                     "text": corrected,
                     "original": line,
@@ -563,7 +474,16 @@ class LightOCRScanner:
                 "timing": timing,
             }
 
+        # Sort candidates by blended score
         candidates.sort(key=lambda c: c["blended"], reverse=True)
+
+        # Debug ranking table
+        print("\n[Name Detection Ranking]")
+        for i, c in enumerate(candidates[:5]):
+            status = "VALID_NAME" if i == 0 else "CANDIDATE"
+            print(f" {i+1}. {c['text']!r} | Score: {c['blended']:.3f} (ocr={c['ocr_score']:.3f}, cand={c['name_score']:.3f}) | {status}")
+        print()
+
         winner = candidates[0]
         name = winner["text"]
         vip_note = (

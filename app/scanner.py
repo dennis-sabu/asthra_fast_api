@@ -36,13 +36,13 @@ import hashlib
 import os
 import re
 import time
-from difflib import SequenceMatcher
 from io import BytesIO
 from typing import Optional
 
 import cv2
 import numpy as np
 from PIL import Image
+from . import name_utils
 
 # ---------------------------------------------------------------------------
 # Disable model-source connectivity check (models already cached locally)
@@ -50,19 +50,8 @@ from PIL import Image
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 # ---------------------------------------------------------------------------
-# VIP name list — correction/validation only, NOT a whitelist
+# Configuration
 # ---------------------------------------------------------------------------
-
-VIP_NAMES: list[str] = [
-    "Msgr. Dr. Joseph Thadathil",
-    "Rev. Prof. Dr. James John Mangalathu",
-    "Dr. V. P. Devassia",
-    "Rev. Dr. Joseph Purayidathil",
-    "Dr. Giby Jose",
-]
-
-# Minimum similarity to accept a VIP correction
-VIP_SIMILARITY_THRESHOLD = 0.75
 
 # Image preprocessing: max side length before passing to VLM (pixels)
 MAX_IMAGE_SIDE = 1280
@@ -74,50 +63,8 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 VL_MAX_NEW_TOKENS = 64
 
 # VL inference: limit image pixels fed to the VLM (28*28 = one ViT patch)
-# Benchmark results (CPU, RTX 3050 not available via this paddle build):
-#   256 * 28 * 28 ≈ 200K px → ~20s  (Dennis Sabu: ✓)  ← chosen
-#   128 * 28 * 28 ≈ 100K px → ~18s  (Dennis Sabu: ✓)  (previous default)
-#    64 * 28 * 28 ≈  50K px → ~18s  (Dennis Sabu: ✓)  (diminishing returns)
-# 512 * 28 * 28 was tried as an experiment on 2026-08-31 and reverted: real
-# on-device tests measured 56.6s and 115.6s processing times (vs the ~20s
-# predicted by linearly extrapolating from the 100K->200K data point).
-# ViT self-attention cost scales worse than linearly with patch count, so a
-# 4x pixel-count jump does not cost a proportional amount of time. It also
-# did not reliably fix accuracy (one scan still found zero text at all).
-# 256 keeps the resolution gain from 128 without the runaway time cost.
 VL_MAX_PIXELS = 256 * 28 * 28
 VL_MIN_PIXELS = 4 * 28 * 28
-
-# ---------------------------------------------------------------------------
-# Non-name keyword reject list (uppercased for comparison)
-# ---------------------------------------------------------------------------
-
-_REJECT_WORDS: frozenset[str] = frozenset({
-    "ST.JOSEPH", "ST. JOSEPH", "COLLEGE", "ENGINEERING",
-    "TECHNOLOGY", "AUTONOMOUS", "B.TECH", "BTECH", "M.TECH", "MTECH",
-    "ECS", "ECE", "CSE", "COMPUTER", "ELECTRONICS", "MECHANICAL",
-    "PRINCIPAL", "SIGNATURE", "MANAGED", "DIOCESE", "DEPARTMENT",
-    "UNIVERSITY", "INSTITUTION", "ACADEMY", "SCHOOL",
-    "IDENTIFICATION", "VALID", "VALIDITY", "ISSUED", "ISSUE",
-    "EXPIRY", "EXPIRES", "ADDRESS", "PHONE", "EMAIL",
-    "WEBSITE", "WWW.", "HTTP", "EMPLOYEE", "STUDENT",
-})
-
-# Regex: numeric IDs / registration numbers
-_ID_PATTERN = re.compile(r"^\d+$|^[A-Z]{1,4}\d{3,}$")
-
-# Regex: date strings
-_DATE_PATTERN = re.compile(
-    r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"
-    r"|\b\d{4}[/-]\d{2}[/-]\d{2}\b"
-)
-
-# Honorific tokens (used for scoring and some validation exceptions)
-_HONORIFICS: frozenset[str] = frozenset({
-    "Dr", "Dr.", "Rev", "Rev.", "Prof", "Prof.",
-    "Msgr", "Msgr.", "Mr", "Mr.", "Mrs", "Mrs.", "Ms", "Ms.",
-    "Er", "Er.", "Fr", "Fr.",
-})
 
 
 # ---------------------------------------------------------------------------
@@ -128,129 +75,6 @@ _HONORIFICS: frozenset[str] = frozenset({
 def image_hash(data: bytes) -> str:
     """MD5 digest of raw image bytes — used for duplicate-frame caching."""
     return hashlib.md5(data).hexdigest()
-
-
-def _similarity(a: str, b: str) -> float:
-    """Case-insensitive character-level similarity ratio."""
-    return SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
-
-
-def apply_vip_correction(candidate: str) -> tuple[str, bool]:
-    """
-    Return (corrected_name, was_corrected).
-
-    If `candidate` is sufficiently close to a VIP name, return that VIP name.
-    Otherwise return the original candidate unchanged.
-    """
-    best_score = 0.0
-    best_vip = candidate
-
-    for vip in VIP_NAMES:
-        score = _similarity(candidate, vip)
-        if score > best_score:
-            best_score = score
-            best_vip = vip
-
-    if best_score >= VIP_SIMILARITY_THRESHOLD:
-        return best_vip, True
-
-    return candidate, False
-
-
-def is_valid_name_candidate(text: str) -> bool:
-    """
-    Conservative name validator.
-
-    Returns True if `text` could plausibly be a person's name.
-    Allows honorifics, initials, hyphens, apostrophes.
-    Rejects IDs, institution names, course codes, dates, pure symbols.
-    """
-    text = text.strip()
-    if not text:
-        return False
-
-    upper = text.upper()
-
-    # Reject known non-name keywords
-    if any(w in upper for w in _REJECT_WORDS):
-        return False
-
-    # Reject pure ID patterns (e.g. "24ES031")
-    if _ID_PATTERN.match(text):
-        return False
-
-    # Reject text containing dates
-    if _DATE_PATTERN.search(text):
-        return False
-
-    # Must contain at least 2 letters
-    if sum(c.isalpha() for c in text) < 2:
-        return False
-
-    # Reject if >15% digits (likely a code)
-    digit_ratio = sum(c.isdigit() for c in text) / max(len(text), 1)
-    if digit_ratio > 0.15:
-        return False
-
-    # Allow only name-safe characters
-    if not all(c.isalpha() or c in " .'-," for c in text):
-        return False
-
-    words = text.split()
-
-    # Minimum 2 words
-    if len(words) < 2:
-        return False
-
-    # Maximum 8 words (longer = likely a label/sentence)
-    if len(words) > 8:
-        return False
-
-    # Reject ALL-UPPER lines with 3+ non-honorific words (likely a header)
-    non_honorific = [w for w in words if w.rstrip(".").title() not in _HONORIFICS]
-    if len(non_honorific) >= 3 and all(
-        w.isupper() for w in non_honorific if len(w) > 1
-    ):
-        return False
-
-    return True
-
-
-def score_name_candidate(text: str) -> float:
-    """
-    Heuristic quality score for a name candidate (0.0–1.0).
-    Higher = more likely to be a real person's name.
-    """
-    words = text.split()
-    score = 0.0
-
-    # Word count sweet spot: 2–4
-    if 2 <= len(words) <= 4:
-        score += 0.30
-    elif len(words) == 5:
-        score += 0.15
-
-    # Total length sweet spot
-    if 6 <= len(text) <= 45:
-        score += 0.20
-
-    # Starts with a recognised honorific
-    first = words[0].rstrip(".")
-    if first in {h.rstrip(".") for h in _HONORIFICS}:
-        score += 0.30
-
-    # Most words are title-cased (typical for names)
-    cap_count = sum(1 for w in words if w and w[0].isupper())
-    if cap_count >= max(1, len(words) - 1):
-        score += 0.20
-
-    # VIP proximity bonus
-    for vip in VIP_NAMES:
-        if _similarity(text, vip) > 0.80:
-            score += 0.20
-            break
-
-    return min(score, 1.0)
 
 
 def preprocess_image(image_bytes: bytes) -> np.ndarray:
@@ -306,6 +130,7 @@ class IDScanner:
         self._device = "cpu"
         self._cache: dict[str, dict] = {}  # {md5: result_dict}
         self._cache_max = 30
+        self._last_img_size = (1280, 1280)
 
         self._load_pipeline()
 
@@ -400,6 +225,7 @@ class IDScanner:
             return self._failure(f"Image decode failed: {exc}", t_start)
 
         h, w = bgr.shape[:2]
+        self._last_img_size = (w, h)
         print(f"[Scanner] Processing {w}x{h} image...")
 
         # ---- Run VL inference ----
@@ -470,7 +296,13 @@ class IDScanner:
                     if label in ("text", "paragraph_title"):
                         content = block.get("block_content", "").strip()
                         if content:
-                            texts.append({"text": content, "score": 0.85})
+                            # Capture bbox for layout-aware scoring
+                            bbox = block.get("block_bbox")
+                            texts.append({
+                                "text": content,
+                                "score": 0.85,
+                                "bbox": bbox,
+                            })
             except Exception:
                 pass
 
@@ -499,9 +331,21 @@ class IDScanner:
         """
         candidates: list[dict] = []
 
+        # For relative positioning, we need the image size.
+        # In this scanner, the image size is retrieved during preprocessing.
+        # We'll need to pass it or store it. Let's use a dummy size if not available,
+        # or better, retrieve it from the last processed image.
+        # Actually, the simplest way is to pass it through _run_vl.
+        # But since I'm rewriting this, I'll add a way to get it.
+        # For now, let's use a reasonable default or try to get it from a class attribute.
+        # I'll add self._last_img_size in __init__ and update it in scan_image_bytes.
+
+        img_size = getattr(self, "_last_img_size", (1280, 1280))
+
         for item in texts:
             raw_text = item["text"].strip()
             ocr_score = float(item.get("score", 0.85))
+            bbox = item.get("bbox")
 
             # Split multi-line blocks into individual lines
             lines = [
@@ -511,12 +355,21 @@ class IDScanner:
             ]
 
             for line in lines:
-                if not is_valid_name_candidate(line):
-                    print(f"[Scanner] REJECTED: {line!r}")
+                if not name_utils.is_valid_name_candidate(line):
+                    # Classification for debug logging
+                    reason = "INVALID"
+                    if any(role in line.lower() for role in name_utils.ROLE_EXCLUSION_LIST):
+                        reason = "DESIGNATION_REJECTED"
+                    elif any(w in line.upper() for w in name_utils.REJECT_WORDS):
+                        reason = "INSTITUTION_REJECTED"
+                    elif name_utils.ID_PATTERN.match(line):
+                        reason = "ID_CODE_REJECTED"
+
+                    print(f"[Scanner] {reason}: {line!r}")
                     continue
 
-                corrected, was_corrected = apply_vip_correction(line)
-                name_score = score_name_candidate(corrected)
+                corrected, was_corrected = name_utils.apply_vip_correction(line)
+                name_score = name_utils.score_name_candidate(corrected, bbox=bbox, img_size=img_size)
 
                 # Blend OCR confidence with name-quality heuristic
                 confidence = 0.5 * ocr_score + 0.5 * name_score
@@ -540,7 +393,16 @@ class IDScanner:
                 "processing_time_ms": elapsed_ms,
             }
 
+        # Sort candidates by confidence
         candidates.sort(key=lambda c: c["confidence"], reverse=True)
+
+        # Debug ranking table
+        print("\n[Name Detection Ranking]")
+        for i, c in enumerate(candidates[:5]):
+            status = "VALID_NAME" if i == 0 else "CANDIDATE"
+            print(f" {i+1}. {c['text']!r} | Score: {c['confidence']:.3f} | {status}")
+        print()
+
         winner = candidates[0]
 
         name = winner["text"]
